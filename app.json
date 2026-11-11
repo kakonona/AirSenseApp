@@ -3,14 +3,16 @@
     "name": "AirSenseApp",
     "slug": "AirSenseApp",
     "version": "1.0.0",
+    "sdkVersion": "58.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/log.png",
     "scheme": "airsenseapp",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "ios": {
       "icon": "./assets/expo.icon"
     },
     "android": {
+      "package": "com.naufal.airsense",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
@@ -20,11 +22,18 @@
       "predictiveBackGestureEnabled": false
     },
     "web": {
-      "output": "static",
+      "output": "single",
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router",
+      [
+        "expo-router",
+        {
+          "asyncRoutes": {
+            "web": false
+          }
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -34,11 +43,31 @@
             "imageWidth": 76
           }
         }
+      ],
+      "expo-web-browser",
+      "expo-font",
+      "expo-sharing",
+      "@react-native-google-signin/google-signin/app.plugin.js",
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": true
+        }
       ]
     ],
     "experiments": {
-      "typedRoutes": true,
-      "reactCompiler": true
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {
+        "asyncRoutes": {
+          "web": false
+        }
+      },
+      "eas": {
+        "projectId": "041c95b7-9ab6-404a-b54b-5fd6ec2fcf0f"
+      }
     }
   }
 }
