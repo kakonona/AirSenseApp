@@ -9,6 +9,7 @@ import { useBlePairing } from "@/hooks/use-ble-pairing";
 import { EMPTY_DEVICE, useDevice, useRecentBpm } from "@/hooks/use-device";
 import { useTabNavigation } from "@/hooks/use-tab-navigation";
 import { Feather } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import React from "react";
 import {
   ActivityIndicator,
@@ -53,6 +54,7 @@ const greeting = () => {
 
 export default function HomeScreen() {
   const goTo = useTabNavigation();
+  const router = useRouter();
   const { user } = useAuth();
   const { device } = useDevice(user?.uid);
   const bpmHistory = useRecentBpm(user?.uid, 12);
@@ -160,7 +162,10 @@ export default function HomeScreen() {
                 </Text>
               </View>
             </View>
-            <View
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Riwayat notifikasi"
+              onPress={() => router.push("/notifications")}
               style={{
                 backgroundColor: "#fee2e2",
                 borderRadius: 50,
@@ -173,7 +178,7 @@ export default function HomeScreen() {
               }}
             >
               <Feather name="bell" size={18} color="#dc2626" />
-            </View>
+            </Pressable>
           </View>
 
           {!hasWearable ? (

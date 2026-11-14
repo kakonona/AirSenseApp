@@ -376,24 +376,6 @@ export const AirQualityScore = React.memo(
                 </Text>
               </View>
             ))}
-
-            {/* arrow button, same row, same height as badges */}
-            <Pressable
-              onPress={onPressArrow}
-              hitSlop={8}
-              style={{
-                width: 40,
-                height: 40,
-                borderRadius: 20,
-                backgroundColor: "rgba(0,0,0,0.85)",
-                alignItems: "center",
-                justifyContent: "center",
-              }}
-            >
-              <Text style={{ color: "#fff", fontSize: 16, fontWeight: "700" }}>
-                ↗
-              </Text>
-            </Pressable>
           </View>
         </View>
       </View>

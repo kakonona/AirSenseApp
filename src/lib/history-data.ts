@@ -1,9 +1,9 @@
 import { db } from "@/lib/firebase";
+import { pendingDocs } from "@/lib/offline-queue";
 import {
   Timestamp,
   collection,
   getDocs,
-  limit,
   orderBy,
   query,
   where,
@@ -17,7 +17,12 @@ export type Option = {
   end?: number;
 }; // ms, end eksklusif
 export type Series = { labels: string[]; values: number[] };
-export type Data = { aqi: Series; hr: Series; spo2: Series };
+export type Data = {
+  aqi: Series;
+  hr: Series;
+  spo2: Series;
+  resolution?: string; // keterangan granularitas yang dipakai (mis. "per bulan")
+};
 
 const DAY = 86400000;
 const DAY_FULL = [
@@ -126,39 +131,107 @@ export function buildOptions(period: Period): Option[] {
 }
 
 // ── Baca + olah ──────────────────────────────────────────────────────────────
-type Rec = { t: number; aqi: number; spo2: number; bpm: number };
+// Field null = tidak terukur pada siklus itu (mis. jari tidak terdeteksi). Tiap seri
+// dirata-rata sendiri, jadi siklus tanpa SpO2/BPM tetap mengisi chart AQI.
+type Key = "aqi" | "spo2" | "bpm";
+const KEYS: Key[] = ["aqi", "spo2", "bpm"];
+type Rec = { t: number; aqi: number | null; spo2: number | null; bpm: number | null };
 export type HistoryRecord = {
   historyId: string;
   timestamp: number;
-  aqi: number;
+  aqi: number | null;
   pm25: number | null;
   pm10: number | null;
   co: number | null;
-  spo2: number;
-  bpm: number;
+  spo2: number | null;
+  bpm: number | null;
 };
 
-async function fetchRaw(
-  uid: string,
-  start: number,
-  end: number,
-): Promise<Rec[]> {
-  const q = query(
-    collection(db, "profile", uid, "history"),
-    where("timestamp", ">=", Timestamp.fromMillis(start)),
-    where("timestamp", "<", Timestamp.fromMillis(end)),
-    orderBy("timestamp"),
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => {
-    const x = d.data();
+const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+function toRecord(id: string, x: Record<string, unknown>): HistoryRecord | null {
+  if (!(x.timestamp instanceof Timestamp)) return null;
+  const r: HistoryRecord = {
+    historyId: typeof x.historyId === "string" ? x.historyId : id,
+    timestamp: x.timestamp.toMillis(),
+    aqi: num(x.aqi),
+    pm25: num(x.pm25),
+    pm10: num(x.pm10),
+    co: num(x.co),
+    spo2: num(x.spo2),
+    bpm: num(x.bpm),
+  };
+  return r.aqi === null && r.spo2 === null && r.bpm === null ? null : r;
+}
+
+// Firestore + data yang masih tersimpan di HP (belum tersinkron), digabung per id
+async function readRecords(uid: string, start?: number, end?: number) {
+  const base = collection(db, "profile", uid, "history");
+  const ranged = start !== undefined && end !== undefined;
+  const q = ranged
+    ? query(
+        base,
+        where("timestamp", ">=", Timestamp.fromMillis(start)),
+        where("timestamp", "<", Timestamp.fromMillis(end)),
+        orderBy("timestamp"),
+      )
+    : query(base, orderBy("timestamp"));
+  const pending = await pendingDocs(["profile", uid, "history"]).catch(() => []);
+  const byId = new Map<string, HistoryRecord>();
+  try {
+    const snap = await getDocs(q);
+    for (const d of snap.docs) {
+      const r = toRecord(d.id, d.data());
+      if (r) byId.set(d.id, r);
+    }
+  } catch (error) {
+    // offline & tidak ada cache: tetap tampilkan data lokal bila ada
+    if (pending.length === 0) throw error;
+    console.warn("[history] Firestore tidak terjangkau, memakai data lokal:", error);
+  }
+  for (const p of pending) {
+    const r = toRecord(p.id, p.data);
+    if (!r) continue;
+    if (ranged && (r.timestamp < start || r.timestamp >= end)) continue;
+    byId.set(p.id, r);
+  }
+  return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp);
+}
+
+export function fetchAllHistoryRecords(uid: string): Promise<HistoryRecord[]> {
+  return readRecords(uid);
+}
+
+async function fetchRaw(uid: string, start?: number, end?: number): Promise<Rec[]> {
+  const records = await readRecords(uid, start, end);
+  return records.map((r) => ({ t: r.timestamp, aqi: r.aqi, spo2: r.spo2, bpm: r.bpm }));
+}
+
+type Acc = { label: string; sum: Record<Key, number>; n: Record<Key, number> };
+const newAcc = (label: string): Acc => ({
+  label,
+  sum: { aqi: 0, spo2: 0, bpm: 0 },
+  n: { aqi: 0, spo2: 0, bpm: 0 },
+});
+function addTo(a: Acc, r: Rec) {
+  for (const k of KEYS) {
+    const v = r[k];
+    if (v === null) continue;
+    a.sum[k] += v;
+    a.n[k]++;
+  }
+}
+function toData(accs: Acc[], resolution?: string): Data {
+  const series = (k: Key): Series => {
+    const used = accs.filter((a) => a.n[k] > 0);
     return {
-      t: (x.timestamp as Timestamp).toMillis(),
-      aqi: x.aqi,
-      spo2: x.spo2,
-      bpm: x.bpm,
+      labels: used.map((a) => a.label),
+      values: used.map((a) => Math.round(a.sum[k] / a.n[k])),
     };
-  });
+  };
+  const d: Data = { aqi: series("aqi"), hr: series("bpm"), spo2: series("spo2") };
+  if (resolution !== undefined) d.resolution = resolution;
+  return d;
 }
 
 // Rata-rata per kotak waktu. Kotak tanpa data dibuang → rentang chart mengikuti data.
@@ -169,86 +242,81 @@ export function bucket(
   n: number,
   labelOf: (i: number) => string,
 ): Data {
-  const acc = Array.from({ length: n }, () => ({
-    c: 0,
-    aqi: 0,
-    spo2: 0,
-    bpm: 0,
-  }));
+  const acc = Array.from({ length: n }, (_, i) => newAcc(labelOf(i)));
   for (const r of recs) {
     const i = Math.floor((r.t - start) / size);
     if (i < 0 || i >= n) continue;
-    const a = acc[i];
-    a.c++;
-    a.aqi += r.aqi;
-    a.spo2 += r.spo2;
-    a.bpm += r.bpm;
+    addTo(acc[i], r);
   }
-  const used = acc.map((a, i) => ({ a, i })).filter((x) => x.a.c > 0);
-  const series = (k: "aqi" | "spo2" | "bpm"): Series => ({
-    labels: used.map((x) => labelOf(x.i)),
-    values: used.map((x) => Math.round(x.a[k] / x.a.c)),
-  });
-  return { aqi: series("aqi"), hr: series("bpm"), spo2: series("spo2") };
+  return toData(acc);
 }
 
-function averageByRanges(
-  recs: Rec[],
-  ranges: { label: string; start: number; end: number }[],
-): Data {
-  const totals = ranges.map((range) => ({
-    ...range,
-    count: 0,
-    aqi: 0,
-    bpm: 0,
-    spo2: 0,
-  }));
-  let rangeIndex = 0;
+// ── Granularitas adaptif (Tahun & Semua) ─────────────────────────────────────
+// Data yang belum genap setahun tetap ditampilkan: pilih satuan waktu terbesar yang
+// masih menghasilkan >= 2 titik (tahun -> bulan -> hari -> jam -> per siklus).
+type Level = { resolution: string; key: (d: Date) => string; label: (d: Date) => string };
 
-  for (const rec of recs) {
-    while (rangeIndex < totals.length && rec.t >= totals[rangeIndex].end) {
-      rangeIndex++;
-    }
-
-    const total = totals[rangeIndex];
-    if (!total || rec.t < total.start) continue;
-    total.count++;
-    total.aqi += rec.aqi;
-    total.bpm += rec.bpm;
-    total.spo2 += rec.spo2;
+function adaptiveLevels(withYear: boolean, includeYearLevel: boolean): Level[] {
+  const levels: Level[] = [];
+  if (includeYearLevel) {
+    levels.push({
+      resolution: "per tahun",
+      key: (d) => `${d.getFullYear()}`,
+      label: (d) => `${d.getFullYear()}`,
+    });
   }
-
-  const used = totals.filter((total) => total.count > 0);
-  const series = (key: "aqi" | "bpm" | "spo2"): Series => ({
-    labels: used.map((total) => total.label),
-    values: used.map((total) => Math.round(total[key] / total.count)),
-  });
-  return { aqi: series("aqi"), hr: series("bpm"), spo2: series("spo2") };
-}
-
-export async function fetchAllHistoryRecords(
-  uid: string,
-): Promise<HistoryRecord[]> {
-  const snap = await getDocs(
-    query(collection(db, "profile", uid, "history"), orderBy("timestamp")),
+  levels.push(
+    {
+      resolution: "per bulan",
+      key: (d) => `${d.getFullYear()}-${d.getMonth()}`,
+      label: (d) =>
+        withYear
+          ? `${MONTHS_SHORT[d.getMonth()]} ${String(d.getFullYear()).slice(2)}`
+          : MONTHS_SHORT[d.getMonth()],
+    },
+    {
+      resolution: "per hari",
+      key: (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`,
+      label: (d) => `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`,
+    },
+    {
+      resolution: "per jam",
+      key: (d) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${d.getHours()}`,
+      label: (d) => `${pad(d.getHours())}.00`,
+    },
+    {
+      resolution: "",
+      key: (d) => String(d.getTime()),
+      label: (d) => `${pad(d.getHours())}.${pad(d.getMinutes())}`,
+    },
   );
-  return snap.docs.map((doc) => {
-    const record = doc.data();
-    if (!(record.timestamp instanceof Timestamp)) {
-      throw new Error(`Riwayat ${doc.id} tidak memiliki timestamp yang valid.`);
+  return levels;
+}
+
+function groupBy(recs: Rec[], level: Level): Data {
+  const groups: Acc[] = [];
+  let lastKey: string | null = null;
+  for (const r of recs) {
+    const d = new Date(r.t);
+    const k = level.key(d);
+    if (k !== lastKey) {
+      groups.push(newAcc(level.label(d)));
+      lastKey = k;
     }
-    return {
-      historyId:
-        typeof record.historyId === "string" ? record.historyId : doc.id,
-      timestamp: record.timestamp.toMillis(),
-      aqi: record.aqi as number,
-      pm25: (record.pm25 as number | undefined) ?? null,
-      pm10: (record.pm10 as number | undefined) ?? null,
-      co: (record.co as number | undefined) ?? null,
-      spo2: record.spo2 as number,
-      bpm: record.bpm as number,
-    };
-  });
+    addTo(groups[groups.length - 1], r);
+  }
+  return toData(groups, level.resolution);
+}
+
+// recs harus urut waktu naik
+function adaptive(recs: Rec[], withYear: boolean, includeYearLevel: boolean): Data {
+  if (recs.length === 0) return emptyData();
+  const levels = adaptiveLevels(withYear, includeYearLevel);
+  for (const level of levels) {
+    const keys = new Set(recs.map((r) => level.key(new Date(r.t))));
+    if (keys.size >= 2) return groupBy(recs, level);
+  }
+  return groupBy(recs, levels[levels.length - 1]);
 }
 
 export async function fetchHistory(
@@ -257,29 +325,8 @@ export async function fetchHistory(
   o: Option,
 ): Promise<Data> {
   if (period === "Semua") {
-    const records = await fetchAllHistoryRecords(uid);
-    const recs = records.map(({ timestamp, aqi, spo2, bpm }) => ({
-      t: timestamp,
-      aqi,
-      spo2,
-      bpm,
-    }));
-    if (recs.length === 0) return emptyData();
-
-    const firstYear = new Date(recs[0].t).getFullYear();
-    const lastYear = new Date(recs[recs.length - 1].t).getFullYear();
-    const ranges = Array.from(
-      { length: lastYear - firstYear + 1 },
-      (_, index) => {
-        const year = firstYear + index;
-        return {
-          label: String(year),
-          start: new Date(year, 0, 1).getTime(),
-          end: new Date(year + 1, 0, 1).getTime(),
-        };
-      },
-    );
-    return averageByRanges(recs, ranges);
+    // tahun -> bulan -> hari -> jam -> per siklus, sesuai rentang data yang ada
+    return adaptive(await fetchRaw(uid), true, true);
   }
 
   const { start, end } = o;
@@ -294,25 +341,21 @@ export async function fetchHistory(
       new Date(y, 0, 1).getTime(),
       new Date(y + 1, 0, 1).getTime(),
     );
-    const ranges = MONTHS_SHORT.map((label, mi) => ({
-      label,
-      start: new Date(y, mi, 1).getTime(),
-      end: new Date(y, mi + 1, 1).getTime(),
-    }));
-    return averageByRanges(recs, ranges);
+    // per bulan bila data >= 2 bulan; kalau belum, turun ke hari / jam / per siklus
+    return adaptive(recs, false, false);
   }
 
   const recs = await fetchRaw(uid, start, end);
   if (period === "Hari") {
-    const hourly = bucket(recs, start, 3600000, 24, (i) => `${pad(i)}.00`);
-    const tenMin = bucket(
-      recs,
-      start,
-      600000,
-      144,
-      (i) => `${pad(Math.floor(i / 6))}.${pad((i % 6) * 10)}`,
+    // 1 titik per siklus ukur, label = jam.menit data diterima
+    return toData(
+      recs.map((r) => {
+        const t = new Date(r.t);
+        const a = newAcc(`${pad(t.getHours())}.${pad(t.getMinutes())}`);
+        addTo(a, r);
+        return a;
+      }),
     );
-    return { aqi: hourly.aqi, hr: tenMin.hr, spo2: tenMin.spo2 };
   }
   if (period === "Minggu")
     return bucket(recs, start, DAY, 7, (i) => DAY_SHORT[i]);

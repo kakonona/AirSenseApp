@@ -1,18 +1,14 @@
 import type { Contact } from "@/hooks/use-device";
+import { createGuestInvitation } from "@/lib/emergency-alerts";
 import { db, rtdb } from "@/lib/firebase";
 import { ref as dbRef, remove, set } from "firebase/database";
 import {
-    Timestamp,
-    collection,
     deleteDoc,
     doc,
     getDoc,
     setDoc,
     updateDoc,
 } from "firebase/firestore";
-
-// Halaman penerima undangan (guest) belum dibuat — ganti domain-nya nanti
-export const INVITE_BASE_URL = "https://airsensecp1.web.app/invite";
 
 export type Me = { uid: string; name: string; email: string };
 
@@ -94,15 +90,5 @@ export async function removeWatcher(myUid: string, c: Contact) {
 
 // Link undangan guest: sekali pakai, berlaku 24 jam
 export async function createInvitation(me: { uid: string; name: string }) {
-  const ref = doc(collection(db, "invitations"));
-  const now = Date.now();
-  await setDoc(ref, {
-    inviteId: ref.id,
-    inviter_uid: me.uid,
-    inviter_name: me.name,
-    created_at: Timestamp.fromMillis(now),
-    expires_at: Timestamp.fromMillis(now + 24 * 3600 * 1000),
-    used: false,
-  });
-  return `${INVITE_BASE_URL}/${ref.id}`;
+  return createGuestInvitation(me.name);
 }

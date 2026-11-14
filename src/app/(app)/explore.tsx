@@ -10,6 +10,8 @@ import {
   type Period,
   type Series,
 } from "@/lib/history-data";
+import { flushQueue, subscribePending } from "@/lib/offline-queue";
+import { useFocusEffect } from "expo-router";
 import { CalendarDays, Check, ChevronDown } from "lucide-react-native";
 import React from "react";
 import {
@@ -27,7 +29,7 @@ import { Circle, Path, Svg } from "react-native-svg";
 const PERIOD_OPTIONS: Period[] = ["Hari", "Minggu", "Bulan", "Tahun", "Semua"];
 
 const RESOLUTION: Record<Period, string> = {
-  Hari: "per 10 mnt",
+  Hari: "", // per siklus ukur: tanpa keterangan
   Minggu: "per hari",
   Bulan: "per hari",
   Tahun: "per bulan",
@@ -163,18 +165,20 @@ function ChartCard({
             {title}
           </Text>
         ) : null}
-        <View
-          style={{
-            backgroundColor: "#f3f4f6",
-            borderRadius: 12,
-            paddingHorizontal: 10,
-            paddingVertical: 3,
-          }}
-        >
-          <Text style={{ fontSize: 11, fontWeight: "600", color: "#374151" }}>
-            {dropdown} ⌄
-          </Text>
-        </View>
+        {dropdown ? (
+          <View
+            style={{
+              backgroundColor: "#f3f4f6",
+              borderRadius: 12,
+              paddingHorizontal: 10,
+              paddingVertical: 3,
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: "600", color: "#374151" }}>
+              {dropdown} ⌄
+            </Text>
+          </View>
+        ) : null}
       </View>
       <View
         style={{
@@ -731,6 +735,14 @@ function EmptyHistory() {
 // ─────────────────────────────────────────────────────────────────────────────
 // SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
+function NotEnough() {
+  return (
+    <Text style={{ textAlign: "center", color: "#6b7280", fontSize: 12, paddingVertical: 24 }}>
+      Belum cukup data (butuh minimal 2 siklus dengan nilai ini)
+    </Text>
+  );
+}
+
 export default function HistoryScreen() {
   const goTo = useTabNavigation();
   const { user } = useAuth();
@@ -746,11 +758,29 @@ export default function HistoryScreen() {
   const [data, setData] = React.useState<Data | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const [pending, setPending] = React.useState(0);
+  const [tick, setTick] = React.useState(0);
+  const loadedOnce = React.useRef(false);
+
+  // Muat ulang saat layar dibuka & setiap ada data baru / selesai sinkron
+  useFocusEffect(
+    React.useCallback(() => {
+      setTick((t) => t + 1);
+    }, []),
+  );
+  React.useEffect(
+    () =>
+      subscribePending((n) => {
+        setPending(n);
+        setTick((t) => t + 1);
+      }),
+    [],
+  );
 
   React.useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    setLoading(true);
+    if (!loadedOnce.current) setLoading(true); // refresh latar tanpa spinner
     setError("");
     fetchHistory(user.uid, period, current)
       .then((d) => {
@@ -762,16 +792,25 @@ export default function HistoryScreen() {
         setError(e?.message ?? "Gagal memuat data");
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          loadedOnce.current = true;
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [user?.uid, period, current.key]);
+  }, [user?.uid, period, current.key, tick]);
 
-  const empty = !data || data.hr.values.length < 2;
+  // kosong hanya bila tidak ada satu pun data; tiap chart menangani kekurangan datanya sendiri
+  const empty =
+    !data ||
+    (data.aqi.values.length === 0 &&
+      data.hr.values.length === 0 &&
+      data.spo2.values.length === 0);
 
   const handlePeriod = (p: Period) => {
+    loadedOnce.current = false;
     setPeriod(p);
     setSelIdx(0);
   };
@@ -793,6 +832,23 @@ export default function HistoryScreen() {
               Riwayat
             </Text>
           </View>
+
+          {pending > 0 ? (
+            <Pressable
+              onPress={() => void flushQueue()}
+              style={{
+                marginBottom: 12,
+                paddingVertical: 8,
+                paddingHorizontal: 12,
+                borderRadius: 10,
+                backgroundColor: "#FEF3C7",
+              }}
+            >
+              <Text style={{ fontSize: 12, color: "#92400E" }}>
+                {pending} data tersimpan di HP, belum tersinkron ke Firebase. Ketuk untuk sinkron sekarang.
+              </Text>
+            </Pressable>
+          ) : null}
 
           <PeriodSelector period={period} onSelect={handlePeriod} />
 
@@ -817,27 +873,39 @@ export default function HistoryScreen() {
           ) : (
             <>
               <ChartCard dropdown="AQI⁺" innerBg="#EEF0F2">
-                <AqiBars
-                  key={chartKey}
-                  series={data!.aqi}
-                  page={BARS_PER_PAGE[period]}
-                />
+                {data!.aqi.values.length > 0 ? (
+                  <AqiBars
+                    key={chartKey}
+                    series={data!.aqi}
+                    page={BARS_PER_PAGE[period]}
+                  />
+                ) : (
+                  <NotEnough />
+                )}
               </ChartCard>
 
               <ChartCard
                 title="Detak Jantung"
-                dropdown={RESOLUTION[period]}
+                dropdown={data!.resolution ?? RESOLUTION[period]}
                 innerBg="#F1FDEE"
               >
-                <HeartLine key={chartKey} width={innerW} series={data!.hr} />
+                {data!.hr.values.length >= 2 ? (
+                  <HeartLine key={chartKey} width={innerW} series={data!.hr} />
+                ) : (
+                  <NotEnough />
+                )}
               </ChartCard>
 
               <ChartCard
                 title="SpO2"
-                dropdown={RESOLUTION[period]}
+                dropdown={data!.resolution ?? RESOLUTION[period]}
                 innerBg="#E6FAFE"
               >
-                <SpO2Waves key={chartKey} width={innerW} series={data!.spo2} />
+                {data!.spo2.values.length >= 2 ? (
+                  <SpO2Waves key={chartKey} width={innerW} series={data!.spo2} />
+                ) : (
+                  <NotEnough />
+                )}
               </ChartCard>
             </>
           )}

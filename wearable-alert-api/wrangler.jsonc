@@ -1,0 +1,11 @@
+{
+	"name": "airsense-alert-api",
+	"main": "src/index.ts",
+	"compatibility_date": "2025-03-01",
+	"vars": {
+		"FIREBASE_PROJECT_ID": "airsensecp1",
+	},
+	"observability": {
+		"enabled": true,
+	},
+}

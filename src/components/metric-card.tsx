@@ -3,7 +3,6 @@ import {
   Animated,
   Easing,
   PanResponder,
-  Pressable,
   Text,
   View,
   useWindowDimensions,
@@ -138,28 +137,6 @@ function CardShell({
   );
 }
 
-function CornerArrowButton({ onPress }: { onPress?: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={8}
-      style={{
-        position: "absolute",
-        bottom: 6,
-        right: 6,
-        width: 32,
-        height: 32,
-        borderRadius: 16,
-        backgroundColor: "rgba(0,0,0,0.75)",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      <Text style={{ color: "#fff", fontSize: 14, fontWeight: "700" }}>↗</Text>
-    </Pressable>
-  );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // LIQUID CARD (inner content only — the colored water container)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -169,12 +146,10 @@ const LiquidCard = React.memo(
     spo2,
     cardW,
     cardH,
-    onPressArrow,
   }: {
     spo2: number;
     cardW: number;
     cardH: number;
-    onPressArrow?: () => void;
   }) => {
     const fillAnim = useRef(new Animated.Value(spo2)).current;
     const waveOffset = useRef(new Animated.Value(0)).current;
@@ -351,7 +326,6 @@ const LiquidCard = React.memo(
             {getSpo2Label(spo2)}
           </Text>
         </View>
-        <CornerArrowButton onPress={onPressArrow} />
       </View>
     );
   },
@@ -705,13 +679,11 @@ const HeartRateInner = React.memo(
     heartRateDisplay,
     innerW,
     innerH,
-    onPressArrow,
     bpmHistory,
   }: {
     heartRateDisplay: number;
     innerW: number;
     innerH: number;
-    onPressArrow?: () => void;
     bpmHistory: number[];
   }) => {
     return (
@@ -796,7 +768,6 @@ const HeartRateInner = React.memo(
             {getHrLabel(heartRateDisplay)}
           </Text>
         </View>
-        <CornerArrowButton onPress={onPressArrow} />
       </View>
     );
   },
@@ -861,7 +832,7 @@ function useSimulatedData(externalSpo2?: number, externalBpm?: number) {
 // MAIN
 // ─────────────────────────────────────────────────────────────────────────────
 export const MetricCard = React.memo(
-  ({ spo2, heartRate, onPressSpo2, onPressHr }: MetricCardProps) => {
+  ({ spo2, heartRate }: MetricCardProps) => {
     const { width: screenW } = useWindowDimensions();
     const cardW = screenW - 32;
     const GAP = 10;
@@ -888,7 +859,6 @@ export const MetricCard = React.memo(
               heartRateDisplay={heartRateDisplay}
               innerW={innerContentW}
               innerH={INNER_H}
-              onPressArrow={onPressHr}
               bpmHistory={bpmHistory}
             />
           </CardShell>
@@ -905,7 +875,6 @@ export const MetricCard = React.memo(
               spo2={spo2Display}
               cardW={innerContentW}
               cardH={INNER_H}
-              onPressArrow={onPressSpo2}
             />
           </CardShell>
         </View>

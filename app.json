@@ -5,16 +5,16 @@
     "version": "1.0.0",
     "sdkVersion": "58.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/log.png",
+    "icon": "./assets/images/icon.png",
     "scheme": "airsenseapp",
     "userInterfaceStyle": "light",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/images/icon.png"
     },
     "android": {
       "package": "com.naufal.airsense",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#6B9E7E",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
@@ -37,21 +37,39 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
+          "backgroundColor": "#6B9E7E",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 160,
           "android": {
             "image": "./assets/images/splash-icon.png",
-            "imageWidth": 76
+            "imageWidth": 160
           }
         }
       ],
       "expo-web-browser",
       "expo-font",
       "expo-sharing",
+      [
+        "expo-notifications",
+        {
+          "color": "#6B9E7E",
+          "defaultChannel": "emergency-alerts"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Izinkan AirSense mengakses lokasi saat digunakan untuk mencatat lokasi kejadian darurat.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
       "@react-native-google-signin/google-signin/app.plugin.js",
+      "./plugins/with-airsense-ble-service",
       [
         "react-native-ble-plx",
         {
-          "isBackgroundEnabled": false,
+          "isBackgroundEnabled": true,
           "neverForLocation": true
         }
       ]

@@ -2,6 +2,7 @@
 
 # dependencies
 node_modules/
+functions/lib/
 
 # Expo
 .expo/
@@ -17,6 +18,10 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+google-services.json
+*firebase-adminsdk*.json
+service-account*.json
+*worker-key*.json
 
 # Metro
 .metro-health-check*
