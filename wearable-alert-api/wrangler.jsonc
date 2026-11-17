@@ -3,7 +3,9 @@
 	"main": "src/index.ts",
 	"compatibility_date": "2025-03-01",
 	"vars": {
-		"FIREBASE_PROJECT_ID": "airsensecp1",
+		"FIREBASE_PROJECT_ID": "airsense-cp2",
+		// Alamat publik (proxy Vercel): *.workers.dev diblokir sebagian operator seluler
+		"PUBLIC_BASE_URL": "https://airsense-api.vercel.app",
 	},
 	"observability": {
 		"enabled": true,

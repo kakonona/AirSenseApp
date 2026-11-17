@@ -46,3 +46,7 @@ app-example
 # generated native folders
 /ios
 /android
+
+# kunci tanda tangan APK (unduhan dari EAS untuk build lokal)
+credentials.json
+/credentials/

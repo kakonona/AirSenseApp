@@ -3,6 +3,15 @@ export interface Env {
   GOOGLE_SERVICE_ACCOUNT: string;
   // Opsional: key gratis dari geoapify.com untuk gambar peta di notifikasi
   GEOAPIFY_API_KEY?: string;
+  // Alamat publik API (mis. proxy Vercel). Dipakai untuk link undangan & gambar peta,
+  // karena *.workers.dev diblokir sebagian operator seluler.
+  PUBLIC_BASE_URL?: string;
+}
+
+// Alamat yang dibuka HP pengguna: proxy publik bila diatur, kalau tidak alamat Worker ini
+function publicOrigin(request: Request, env: Env) {
+  const configured = env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, "");
+  return configured || new URL(request.url).origin;
 }
 
 type JsonMap = Record<string, unknown>;
@@ -500,17 +509,41 @@ async function readBody(request: Request): Promise<JsonMap> {
   return body as JsonMap;
 }
 
+// APK lama memanggil registerPushToken berulang-ulang tanpa henti (putaran event token
+// expo-notifications). Tiap panggilan = 1 tulisan Firestore, sehingga kuota harian habis.
+// Token yang sama untuk akun yang sama cukup ditulis sekali per 6 jam; pengecekan ini di
+// memori Worker sehingga tidak memakai kuota baca/tulis Firestore sama sekali.
+const PUSH_TOKEN_REWRITE_MS = 6 * 60 * 60 * 1000;
+const recentPushTokens = new Map<string, number>();
+
 async function registerPushToken(request: Request, env: Env) {
   const uid = await verifyFirebaseToken(request, env.FIREBASE_PROJECT_ID);
   const body = await readBody(request);
   const token = requiredToken(body.token);
   const tokenId = await sha256(token);
-  await patchDocument(env, `profile/${uid}/push_tokens/${tokenId}`, {
-    uid,
-    token,
-    platform: body.platform === "ios" ? "ios" : "android",
-    updated_at: asTimestamp(Date.now()),
-  });
+  const key = `${uid}/${tokenId}`;
+  const now = Date.now();
+  const last = recentPushTokens.get(key);
+  if (last !== undefined && now - last < PUSH_TOKEN_REWRITE_MS) {
+    return { registered: true };
+  }
+  recentPushTokens.set(key, now);
+  if (recentPushTokens.size > 5000) {
+    for (const [k, t] of recentPushTokens) {
+      if (now - t >= PUSH_TOKEN_REWRITE_MS) recentPushTokens.delete(k);
+    }
+  }
+  try {
+    await patchDocument(env, `profile/${uid}/push_tokens/${tokenId}`, {
+      uid,
+      token,
+      platform: body.platform === "ios" ? "ios" : "android",
+      updated_at: asTimestamp(Date.now()),
+    });
+  } catch (error) {
+    recentPushTokens.delete(key); // belum tersimpan -> boleh dicoba lagi
+    throw error;
+  }
   return { registered: true };
 }
 
@@ -531,7 +564,8 @@ async function createInvitation(request: Request, env: Env) {
     expires_at: asTimestamp(now + 24 * 60 * 60 * 1000),
     used: false,
   });
-  return { inviteId, link: `airsenseapp://invite/${inviteId}` };
+  // Link https agar bisa diklik di WhatsApp/SMS; halaman ini lalu membuka aplikasi.
+  return { inviteId, link: `${publicOrigin(request, env)}/invite/${inviteId}` };
 }
 
 async function acceptGuestInvitation(request: Request, env: Env) {
@@ -675,24 +709,65 @@ function isAlertParameter(value: unknown): value is AlertParameter {
   return value === "SpO2" || value === "BPM" || value === "AQI";
 }
 
-function alertCopy(parameter: AlertParameter, value: number, status: AlertSeverity) {
+// Teks untuk kontak darurat: menyebut siapa yang sedang dalam kondisi tersebut
+function alertCopy(
+  parameter: AlertParameter,
+  value: number,
+  status: AlertSeverity,
+  name: string,
+) {
   const severity = status === "danger" ? "KRITIS" : "PERINGATAN";
+  const level = status === "danger" ? "kondisi kritis" : "perlu diwaspadai";
   if (parameter === "SpO2") {
     return {
-      title: `${severity}: SpO₂`,
-      body: `SpO₂ pengemudi ${value}%. Periksa kondisi dan lokasi kejadian.`,
+      title: `${severity}: SpO₂ ${name}`,
+      body: `${name} mengalami SpO₂ rendah (${value}%), ${level}. Segera periksa kondisinya.`,
     };
   }
   if (parameter === "BPM") {
     return {
-      title: `${severity}: Denyut jantung`,
-      body: `Denyut jantung pengemudi ${value} BPM, di luar rentang aman.`,
+      title: `${severity}: Denyut jantung ${name}`,
+      body: `Denyut jantung ${name} ${value} BPM, di luar rentang aman (${level}). Segera periksa kondisinya.`,
     };
   }
   return {
-    title: `${severity}: Kualitas udara`,
-    body: `AQI pengemudi ${value}, melebihi ambang 100.`,
+    title: `${severity}: Kualitas udara di sekitar ${name}`,
+    body: `${name} berada di udara tidak sehat (AQI ${value}), ${level}.`,
   };
+}
+
+const APP_SCHEME = "airsenseapp";
+const ANDROID_PACKAGE = "com.naufal.airsense";
+
+// Halaman pendarat link undangan: membuka aplikasi AirSense di layar terima undangan
+function invitePage(inviteId: string) {
+  const deep = `${APP_SCHEME}://invite/${inviteId}`;
+  const intent = `intent://invite/${inviteId}#Intent;scheme=${APP_SCHEME};package=${ANDROID_PACKAGE};end`;
+  const html = `<!doctype html>
+<html lang="id"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Undangan AirSense</title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#F7F8F3;color:#1f3a2e;display:flex;min-height:100vh;align-items:center;justify-content:center}
+main{max-width:420px;padding:24px;text-align:center}
+h1{font-size:22px;margin:0 0 8px}
+p{color:#4b5563;line-height:1.5;font-size:15px}
+a.btn{display:inline-block;margin-top:16px;padding:14px 28px;border-radius:999px;background:#6B9E7E;color:#fff;text-decoration:none;font-weight:700}
+small{display:block;margin-top:20px;color:#6b7280;line-height:1.5}
+</style></head><body><main>
+<h1>Undangan kontak darurat AirSense</h1>
+<p>Anda diundang menjadi kontak darurat. Anda akan menerima notifikasi bila pengundang berada dalam kondisi berbahaya.</p>
+<a class="btn" id="open" href="${deep}">Buka di aplikasi AirSense</a>
+<small>Aplikasi AirSense harus sudah terpasang di HP ini. Bila tombol tidak bereaksi, pasang aplikasinya dulu lalu buka kembali link ini. Undangan berlaku 24 jam dan hanya bisa dipakai sekali.</small>
+</main><script>
+var isAndroid=/Android/i.test(navigator.userAgent);
+var target=isAndroid?${JSON.stringify(intent)}:${JSON.stringify(deep)};
+document.getElementById("open").href=target;
+setTimeout(function(){location.href=target},300);
+</script></body></html>`;
+  return new Response(html, {
+    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+  });
 }
 
 type FcmResult = "sent" | "invalid_token" | "retry";
@@ -810,6 +885,9 @@ async function reportEmergencyAlert(request: Request, env: Env) {
   const { parameter, value, status, location, sequence, timestampMs } =
     validateAlert(body);
   const alertPath = `profile/${uid}/notifications/${eventId}`;
+  // Catatan alert di Firestore hanya pembukuan (riwayat + anti-dobel). Bila Firestore
+  // menolak tulisan (mis. kuota harian paket gratis habis), push ke kontak darurat
+  // TETAP dikirim: keselamatan tidak boleh bergantung pada kuota database.
   let alertDocument = await getDocument(env, alertPath);
   if (!alertDocument) {
     const created = await createDocument(env, `profile/${uid}/notifications`, eventId, {
@@ -825,19 +903,25 @@ async function reportEmergencyAlert(request: Request, env: Env) {
       recipientType: "owner",
       targetUid: uid,
       delivery: { status: "pending", attempted: 0, sent: 0, failed: 0 },
+    }).catch((error: unknown) => {
+      console.error("Alert record could not be written; sending push anyway", {
+        uid,
+        eventId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
     });
-    alertDocument = await getDocument(env, alertPath);
-    if (!alertDocument) {
-      throw new ApiError("Alert tersimpan tetapi tidak dapat dibaca kembali.", 503);
-    }
-    if (!created) {
-      const currentDelivery = unfields(alertDocument.fields).delivery as JsonMap | undefined;
-      if (currentDelivery?.status === "sent" || currentDelivery?.status === "no_recipients") {
-        return { notifId: eventId, duplicate: true };
+    if (created !== null) {
+      alertDocument = await getDocument(env, alertPath);
+      if (alertDocument && !created) {
+        const currentDelivery = unfields(alertDocument.fields).delivery as JsonMap | undefined;
+        if (currentDelivery?.status === "sent" || currentDelivery?.status === "no_recipients") {
+          return { notifId: eventId, duplicate: true };
+        }
       }
     }
   }
-  const existing = unfields(alertDocument.fields);
+  const existing = alertDocument ? unfields(alertDocument.fields) : {};
   const delivery = (existing.delivery ?? {}) as JsonMap;
   if (delivery.status === "sent" || delivery.status === "no_recipients") {
     return { notifId: eventId, duplicate: true };
@@ -902,8 +986,8 @@ async function reportEmergencyAlert(request: Request, env: Env) {
   const pending = [...recipients.entries()].filter(
     ([hash]) => !sentHashes.has(hash) && !invalidHashes.has(hash),
   );
-  const copy = alertCopy(parameter, value, status);
-  const origin = new URL(request.url).origin;
+  const copy = alertCopy(parameter, value, status, ownerName);
+  const origin = publicOrigin(request, env);
   const mapUrl =
     location && env.GEOAPIFY_API_KEY
       ? `${origin}/map?lat=${location.latitude.toFixed(5)}&lon=${location.longitude.toFixed(5)}`
@@ -927,6 +1011,8 @@ async function reportEmergencyAlert(request: Request, env: Env) {
           value: String(value),
           status,
           recipientType: recipient.type,
+          senderName: ownerName,
+          timestampMs: String(timestampMs),
           ...(location
             ? {
                 latitude: String(location.latitude),
@@ -999,7 +1085,7 @@ async function reportEmergencyAlert(request: Request, env: Env) {
   const failed = results.filter((result) => !result.ok && !result.invalid).length;
   const invalid = results.filter((result) => result.invalid).length;
   const sent = results.filter((result) => result.ok).length;
-  await patchDocument(
+  const recorded = await patchDocument(
     env,
     alertPath,
     {
@@ -1022,9 +1108,23 @@ async function reportEmergencyAlert(request: Request, env: Env) {
       },
     },
     ["delivery"],
+  ).then(
+    () => true,
+    (error: unknown) => {
+      console.error("Alert delivery status could not be written", {
+        uid,
+        eventId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    },
   );
-  if (failed > 0) throw new ApiError("Beberapa push belum terkirim; alert akan dicoba ulang.", 503);
-  return { notifId: eventId, duplicate: false, sent, failed: 0 };
+  // Tanpa catatan pengiriman, percobaan ulang akan mengirim dobel ke penerima yang sudah
+  // menerima -> hanya minta coba ulang bila status pengiriman berhasil dicatat.
+  if (failed > 0 && (recorded || sent === 0)) {
+    throw new ApiError("Beberapa push belum terkirim; alert akan dicoba ulang.", 503);
+  }
+  return { notifId: eventId, duplicate: false, sent, failed, recorded };
 }
 
 export default {
@@ -1041,6 +1141,8 @@ export default {
         if (url.pathname === "/map") return await staticMap(url, env);
         const tile = url.pathname.match(/^\/tile\/(\d+)\/(\d+)\/(\d+)\.png$/);
         if (tile) return await osmTile(url, tile);
+        const invite = url.pathname.match(/^\/invite\/([A-Za-z0-9_-]{1,128})$/);
+        if (invite) return invitePage(invite[1]);
       } catch (error) {
         return errorResponse(error, origin);
       }

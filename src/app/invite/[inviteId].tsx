@@ -3,6 +3,7 @@ import { useLocalSearchParams } from "expo-router";
 import React from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Pressable,
   ScrollView,
   Text,
@@ -46,6 +47,7 @@ export default function GuestInviteScreen() {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: "#F7F8F3" }}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
       <ScrollView
         contentContainerStyle={{
           flexGrow: 1,
@@ -124,6 +126,7 @@ export default function GuestInviteScreen() {
           )}
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

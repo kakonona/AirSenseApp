@@ -4,7 +4,7 @@ import { BlePairingProvider } from "@/hooks/use-ble-pairing";
 import { requestInitialAlertPermissions } from "@/lib/app-permissions";
 import { startOfflineSync } from "@/lib/offline-queue";
 import {
-  registerAuthenticatedPushToken,
+  startPushRegistration,
   watchPushTokenChanges,
 } from "@/lib/emergency-alerts";
 import {
@@ -60,15 +60,15 @@ function RootNavigator() {
 
   React.useEffect(() => {
     if (initializing || !user || user.isAnonymous) return;
-    void registerAuthenticatedPushToken().catch((error: unknown) => {
-      Alert.alert(
-        "Notifikasi kontak belum aktif",
-        error instanceof Error
-          ? error.message
-          : "Pendaftaran FCM gagal. Lihat diagnostik aplikasi untuk detail tanpa token.",
-      );
+    // Dicoba ulang otomatis sampai berhasil (mis. app dibuka saat belum ada internet)
+    const stopRegistration = startPushRegistration((message) => {
+      Alert.alert("Notifikasi kontak belum aktif", message);
     });
-    return watchPushTokenChanges();
+    const stopWatching = watchPushTokenChanges();
+    return () => {
+      stopRegistration();
+      stopWatching();
+    };
   }, [initializing, user]);
 
   if (initializing) {

@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as Notifications from "expo-notifications";
-import { Platform } from "react-native";
+import { AppState, Platform } from "react-native";
 import { auth } from "@/lib/firebase";
 import { Timestamp } from "firebase/firestore";
 import { enqueueWrite } from "@/lib/offline-queue";
@@ -92,6 +92,25 @@ function pushFailure(stage: PushRegistrationStage, error: unknown) {
   );
 }
 
+// Pesan untuk pengguna (detail teknis tetap dicatat di log)
+function pushErrorMessage(error: PushRegistrationError) {
+  switch (error.stage) {
+    case "permission":
+      return "Izin notifikasi belum diberikan. Aktifkan notifikasi AirSense di Pengaturan HP, lalu coba lagi.";
+    case "native-token": {
+      // Kode dari Google Play Services, mis. PHONE_REGISTRATION_ERROR / SERVICE_NOT_AVAILABLE
+      const google = /[A-Z]{3,}(?:_[A-Z]+)+/.exec(error.message)?.[0];
+      return `HP ini belum berhasil terdaftar ke layanan notifikasi Google${google ? ` (${google})` : ""}. Pastikan internet aktif dan mode pesawat mati, lalu coba lagi. Bila masih gagal, perbarui Google Play Services lewat Play Store dan restart HP.`;
+    }
+    case "worker-network":
+      return "Tidak dapat menghubungi server AirSense. Periksa koneksi internet, lalu coba lagi.";
+    case "firebase-auth":
+      return "Sesi login tidak dapat diperiksa. Periksa koneksi internet atau login ulang.";
+    default:
+      return error.message;
+  }
+}
+
 function logPushFailure(error: PushRegistrationError) {
   console.error("[FCM] Device registration failed.", {
     stage: error.stage,
@@ -99,9 +118,7 @@ function logPushFailure(error: PushRegistrationError) {
     httpStatus: error.httpStatus,
     message: redactDiagnostic(error.message),
   });
-  return new Error(
-    `Tahap: ${error.stage}${error.httpStatus ? ` (HTTP ${error.httpStatus})` : ""}. ${error.message}`,
-  );
+  return new Error(pushErrorMessage(error));
 }
 
 async function alertApiRequest(
@@ -513,6 +530,13 @@ async function flushPendingAlerts(uid: string, state: AlertState, force = false)
     clearRetry(uid);
     return;
   }
+  // Akun sudah berganti (logout / login akun lain di HP yang sama): alert milik `uid`
+  // jangan dikirim memakai sesi akun lain, karena Worker mencatat alert atas nama akun
+  // yang sedang login. Alert tetap tersimpan dan dikirim saat pemiliknya login lagi.
+  if (auth.currentUser?.uid !== uid) {
+    clearRetry(uid);
+    return;
+  }
   const retry = retryState.get(uid);
   if (!force && retry && Date.now() < retry.nextAt) return; // tunggu jadwal coba ulang
 
@@ -539,6 +563,7 @@ async function flushPendingAlerts(uid: string, state: AlertState, force = false)
       const event = state.pending[0];
       // Lokasi belum didapat saat alert dibuat -> coba lagi sebelum dikirim ulang
       if (!event.location) event.location = await captureLocation();
+      if (auth.currentUser?.uid !== uid) return; // akun berganti saat menunggu lokasi
       try {
         await alertApiRequest("reportEmergencyAlert", { ...event, uid });
       } catch (error) {
@@ -681,10 +706,15 @@ let tokenListener: Notifications.EventSubscription | null = null;
 
 // Token FCM bisa berganti (update app, data dihapus, rotasi Google). Tanpa ini
 // pengirim/kontak darurat tetap memakai token lama dan notifikasi gagal terkirim.
+// PENTING: expo-notifications juga memicu event ini setiap kali getDevicePushTokenAsync()
+// dipanggil. Karena itu listener memakai token dari event (TIDAK memanggil
+// getDevicePushTokenAsync lagi — itu membuat putaran tanpa henti yang menghabiskan kuota
+// Firestore lewat Worker), dan token yang sama tidak dikirim ulang.
 export function watchPushTokenChanges() {
   if (Platform.OS === "web" || tokenListener) return () => {};
-  tokenListener = Notifications.addPushTokenListener(() => {
-    void registerAuthenticatedPushToken().catch((error: unknown) => {
+  tokenListener = Notifications.addPushTokenListener((event) => {
+    if (!auth.currentUser || typeof event.data !== "string" || event.data.length < 20) return;
+    sendPushToken(event.data).catch((error: unknown) => {
       console.error("[FCM] Re-registration after token change failed:", error);
     });
   });
@@ -694,14 +724,112 @@ export function watchPushTokenChanges() {
   };
 }
 
+// Google Play Services kadang gagal sesaat (baru keluar dari mode pesawat, jaringan baru
+// tersambung) -> coba beberapa kali sebelum menyerah.
+const TOKEN_RETRY_DELAYS_MS = [2_000, 5_000];
+
+async function getDevicePushTokenWithRetry() {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await getDevicePushToken();
+    } catch (error) {
+      const failure = pushFailure("native-token", error);
+      if (failure.stage !== "native-token" || attempt >= TOKEN_RETRY_DELAYS_MS.length) {
+        throw failure;
+      }
+      await new Promise((resolve) => setTimeout(resolve, TOKEN_RETRY_DELAYS_MS[attempt]));
+    }
+  }
+}
+
+// Token yang sudah/sedang dikirim ke server, per akun. Server (Worker) menulis ke Firestore
+// tiap kali dipanggil, jadi token yang sama TIDAK boleh dikirim berulang-ulang.
+let registeredKey: string | null = null;
+let inflight: { key: string; promise: Promise<void> } | null = null;
+
+function sendPushToken(token: string): Promise<void> {
+  const key = `${auth.currentUser?.uid ?? ""}:${token}`;
+  if (key === registeredKey) return Promise.resolve();
+  if (inflight?.key === key) return inflight.promise;
+  const promise = alertApiRequest("registerPushToken", { token, platform: Platform.OS })
+    .then(() => {
+      registeredKey = key;
+      console.info("[FCM] Device registration completed; token value is not logged.");
+    })
+    .finally(() => {
+      if (inflight?.key === key) inflight = null;
+    });
+  inflight = { key, promise };
+  return promise;
+}
+
+async function registerPushTokenOnce() {
+  const token = await getDevicePushTokenWithRetry();
+  await sendPushToken(token);
+}
+
 export async function registerAuthenticatedPushToken() {
   try {
-    const token = await getDevicePushToken();
-    await alertApiRequest("registerPushToken", { token, platform: Platform.OS });
-    console.info("[FCM] Device registration completed; token value is not logged.");
+    await registerPushTokenOnce();
   } catch (error) {
     throw logPushFailure(pushFailure("worker-network", error));
   }
+}
+
+const PUSH_RETRY_BASE_MS = 30_000;
+const PUSH_RETRY_MAX_MS = 15 * 60_000;
+const PUSH_NOTIFY_AFTER = 3;
+
+// Daftarkan HP ini untuk menerima notifikasi kontak darurat, dan TERUS mencoba sampai
+// berhasil (30 dtk, 1, 2, 4 ... maks 15 menit, serta tiap aplikasi dibuka lagi). Sebelumnya
+// hanya dicoba sekali saat app dibuka: bila saat itu tanpa internet, HP tidak pernah
+// terdaftar sampai app ditutup-buka lagi.
+// onProblem dipanggil sekali bila masalahnya ada di HP (izin / Google Play Services),
+// bukan untuk sekadar tidak ada internet.
+export function startPushRegistration(onProblem: (message: string) => void) {
+  if (Platform.OS === "web") return () => {};
+  let stopped = false;
+  let registered = false;
+  let running = false;
+  let failures = 0;
+  let notified = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const attempt = async () => {
+    if (stopped || registered || running) return;
+    running = true;
+    if (timer) clearTimeout(timer);
+    timer = null;
+    try {
+      await registerPushTokenOnce();
+      registered = true;
+    } catch (error) {
+      const failure = pushFailure("worker-network", error);
+      logPushFailure(failure);
+      failures++;
+      const deviceProblem = failure.stage === "permission" || failure.stage === "native-token";
+      if (!stopped && !notified && deviceProblem && failures >= PUSH_NOTIFY_AFTER) {
+        notified = true;
+        onProblem(pushErrorMessage(failure));
+      }
+      if (!stopped) {
+        const delay = Math.min(PUSH_RETRY_MAX_MS, PUSH_RETRY_BASE_MS * 2 ** (failures - 1));
+        timer = setTimeout(() => void attempt(), delay);
+      }
+    } finally {
+      running = false;
+    }
+  };
+
+  const appState = AppState.addEventListener("change", (next) => {
+    if (next === "active") void attempt();
+  });
+  void attempt();
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    appState.remove();
+  };
 }
 
 export async function createGuestInvitation(name: string) {
@@ -721,12 +849,12 @@ export async function acceptGuestInvitation(
   inviteId: string,
   name: string,
 ) {
-  const token = await getDevicePushToken();
-  await alertApiRequest(
-    "acceptGuestInvitation",
-    { inviteId, name, token },
-    false,
-  );
+  try {
+    const token = await getDevicePushTokenWithRetry();
+    await alertApiRequest("acceptGuestInvitation", { inviteId, name, token }, false);
+  } catch (error) {
+    throw logPushFailure(pushFailure("worker-network", error));
+  }
 }
 
 export { EMERGENCY_CHANNEL_ID };

@@ -10,9 +10,14 @@ import {
   type Period,
   type Series,
 } from "@/lib/history-data";
-import { flushQueue, subscribePending } from "@/lib/offline-queue";
+import {
+  flushQueue,
+  subscribePending,
+  subscribeSync,
+  type SyncState,
+} from "@/lib/offline-queue";
 import { useFocusEffect } from "expo-router";
-import { CalendarDays, Check, ChevronDown } from "lucide-react-native";
+import { CalendarDays, Check, ChevronDown, RefreshCw } from "lucide-react-native";
 import React from "react";
 import {
   ActivityIndicator,
@@ -23,6 +28,13 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import Animated, {
+  FadeIn,
+  FadeOut,
+  LinearTransition,
+  useAnimatedStyle,
+  withTiming,
+} from "react-native-reanimated";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Circle, Path, Svg } from "react-native-svg";
 
@@ -422,6 +434,58 @@ function DateDropdown({
   );
 }
 
+// Indikator halaman: paling banyak MAX_DOTS titik supaya tidak mendorong tombol panah keluar
+// layar saat datanya banyak. Titik di ujung mengecil & memudar bila masih ada halaman di
+// baliknya; angka "3 / 12" menunjukkan posisi pastinya.
+const MAX_DOTS = 5;
+
+function PageDot({ active, edge }: { active: boolean; edge: boolean }) {
+  const style = useAnimatedStyle(() => {
+    const size = edge ? 4 : 6;
+    return {
+      width: withTiming(active ? 14 : size, { duration: 200 }),
+      height: withTiming(size, { duration: 200 }),
+      opacity: withTiming(edge ? 0.35 : active ? 1 : 0.6, { duration: 200 }),
+    };
+  });
+  return (
+    <Animated.View
+      entering={FadeIn.duration(200)}
+      exiting={FadeOut.duration(150)}
+      layout={LinearTransition.duration(200)}
+      style={[
+        { borderRadius: 3, backgroundColor: "#111827", marginHorizontal: 3 },
+        style,
+      ]}
+    />
+  );
+}
+
+function PageDots({ pages, active }: { pages: number; active: number }) {
+  const count = Math.min(pages, MAX_DOTS);
+  const first = Math.min(
+    Math.max(0, active - Math.floor(MAX_DOTS / 2)),
+    pages - count,
+  );
+  return (
+    <View style={{ alignItems: "center" }}>
+      <View style={{ flexDirection: "row", alignItems: "center", height: 6 }}>
+        {Array.from({ length: count }, (_, k) => {
+          const i = first + k;
+          const edge =
+            (k === 0 && i > 0) || (k === count - 1 && i < pages - 1);
+          return <PageDot key={i} active={i === active} edge={edge} />;
+        })}
+      </View>
+      {pages > 1 && (
+        <Text style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+          {active + 1} / {pages}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 function AqiBars({ series, page }: { series: Series; page: number }) {
   const { labels, values } = series;
   const lastStart = Math.max(0, values.length - page);
@@ -490,20 +554,7 @@ function AqiBars({ series, page }: { series: Series; page: number }) {
         }}
       >
         <ArrowBtn dir="left" disabled={start === 0} onPress={() => move(-1)} />
-        <View style={{ flexDirection: "row" }}>
-          {Array.from({ length: pages }).map((_, i) => (
-            <View
-              key={i}
-              style={{
-                width: i === activePage ? 14 : 6,
-                height: 6,
-                borderRadius: 3,
-                backgroundColor: "#111827",
-                marginHorizontal: 3,
-              }}
-            />
-          ))}
-        </View>
+        <PageDots pages={pages} active={activePage} />
         <ArrowBtn
           dir="right"
           disabled={start === lastStart}
@@ -758,7 +809,8 @@ export default function HistoryScreen() {
   const [data, setData] = React.useState<Data | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
-  const [pending, setPending] = React.useState(0);
+  const [sync, setSync] = React.useState<SyncState | null>(null);
+  const pending = sync?.pending ?? 0;
   const [tick, setTick] = React.useState(0);
   const loadedOnce = React.useRef(false);
 
@@ -770,12 +822,12 @@ export default function HistoryScreen() {
   );
   React.useEffect(
     () =>
-      subscribePending((n) => {
-        setPending(n);
+      subscribePending(() => {
         setTick((t) => t + 1);
       }),
     [],
   );
+  React.useEffect(() => subscribeSync(setSync), []);
 
   React.useEffect(() => {
     if (!user) return;
@@ -835,18 +887,31 @@ export default function HistoryScreen() {
 
           {pending > 0 ? (
             <Pressable
-              onPress={() => void flushQueue()}
+              disabled={sync?.syncing}
+              onPress={() => void flushQueue(true)}
               style={{
                 marginBottom: 12,
-                paddingVertical: 8,
+                paddingVertical: 10,
                 paddingHorizontal: 12,
                 borderRadius: 10,
                 backgroundColor: "#FEF3C7",
+                flexDirection: "row",
+                alignItems: "center",
+                gap: 10,
               }}
             >
-              <Text style={{ fontSize: 12, color: "#92400E" }}>
-                {pending} data tersimpan di HP, belum tersinkron ke Firebase. Ketuk untuk sinkron sekarang.
+              <Text style={{ flex: 1, fontSize: 12, color: "#92400E" }}>
+                {sync?.syncing
+                  ? `Menyinkronkan ${pending} data ke Firebase…`
+                  : sync?.lastError
+                    ? `${pending} data belum tersinkron. ${sync.lastError}. Ketuk untuk coba lagi.`
+                    : `${pending} data tersimpan di HP, belum tersinkron ke Firebase. Ketuk untuk sinkron sekarang.`}
               </Text>
+              {sync?.syncing ? (
+                <ActivityIndicator size="small" color="#92400E" />
+              ) : (
+                <RefreshCw size={18} color="#92400E" />
+              )}
             </Pressable>
           ) : null}
 

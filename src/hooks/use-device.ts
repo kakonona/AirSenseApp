@@ -1,4 +1,5 @@
 import { db, rtdb } from "@/lib/firebase";
+import { subscribeLocalDevice, type LocalDevice } from "@/lib/local-device";
 import { onValue, ref } from "firebase/database";
 import {
   collection,
@@ -9,17 +10,7 @@ import {
 } from "firebase/firestore";
 import React from "react";
 
-export type DeviceState = {
-  status: "online" | "offline";
-  wearable_added?: boolean;
-  threshold_status: "normal" | "warning" | "danger";
-  aqi: number;
-  pm25: number;
-  pm10: number;
-  co: number;
-  spo2: number;
-  bpm: number;
-};
+export type DeviceState = LocalDevice;
 
 export const EMPTY_DEVICE: DeviceState = {
   status: "offline",
@@ -33,17 +24,42 @@ export const EMPTY_DEVICE: DeviceState = {
   bpm: 0,
 };
 
-// Nilai terkini dari Realtime Database: device/{uid}
+// HP yang sedang menerima data wearable (BLE) selalu memakai nilai lokalnya. Selain itu
+// dipakai yang paling baru di antara nilai lokal dan Realtime Database.
+function pickDevice(local: DeviceState | null, remote: DeviceState | null) {
+  if (!local) return remote;
+  if (!remote || local.status === "online") return local;
+  return (remote.received_at_ms ?? 0) > (local.received_at_ms ?? 0) ? remote : local;
+}
+
+// Nilai terkini wearable: salinan di HP (tersedia tanpa internet) + Realtime Database
+// device/{uid} (untuk HP lain / kontak yang memantau).
 export function useDevice(uid?: string | null) {
-  const [device, setDevice] = React.useState<DeviceState | null>(null);
+  // Nilai disimpan bersama uid-nya supaya data akun lama tidak ikut tampil saat uid berganti
+  type Slot = { uid: string; value: DeviceState | null } | null;
+  const [remote, setRemote] = React.useState<Slot>(null);
+  const [local, setLocal] = React.useState<Slot>(null);
   React.useEffect(() => {
     if (!uid) return;
-    return onValue(
+    const stopLocal = subscribeLocalDevice(uid, (value) => setLocal({ uid, value }));
+    const stopRemote = onValue(
       ref(rtdb, `device/${uid}`),
-      (snap) => setDevice(snap.val() as DeviceState | null),
-      () => setDevice(null),
+      (snap) => setRemote({ uid, value: snap.val() as DeviceState | null }),
+      () => setRemote({ uid, value: null }),
     );
+    return () => {
+      stopLocal();
+      stopRemote();
+    };
   }, [uid]);
+  const device = React.useMemo(
+    () =>
+      pickDevice(
+        local && local.uid === uid ? local.value : null,
+        remote && remote.uid === uid ? remote.value : null,
+      ),
+    [local, remote, uid],
+  );
   return { device };
 }
 

@@ -1,0 +1,24 @@
+{
+  "rules": {
+    "device": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('access').child($uid).child(auth.uid).val() === true)",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "access": {
+      "$owner": {
+        ".read": "auth != null && auth.uid === $owner",
+        "$watcher": {
+          ".read": "auth != null && auth.uid === $watcher",
+          ".write": "auth != null && (auth.uid === $owner || (auth.uid === $watcher && data.exists() && (!newData.exists() || newData.val() === true)))",
+          ".validate": "newData.val() === true || newData.val() === 'pending'"
+        }
+      }
+    },
+    "$other": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}

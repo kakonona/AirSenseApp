@@ -18,7 +18,6 @@ import { useRouter } from "expo-router";
 import React from "react";
 import {
   KeyboardAvoidingView,
-  Platform,
   Pressable,
   ScrollView,
   Text,
@@ -96,10 +95,10 @@ export default function LoginScreen() {
   return (
     <AuthScreenBackground>
       <SafeAreaView style={{ flex: 1, backgroundColor: "transparent" }}>
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
+        {/* Android (edge-to-edge) tidak mengecilkan layar saat keyboard muncul, jadi
+            ruang keyboard ditambahkan di sini: isi bisa digulir sampai paling bawah.
+            Saat keyboard ditutup ukurannya kembali seperti biasa. */}
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior="padding">
           <ScrollView
             contentContainerStyle={{ paddingHorizontal: 24, paddingBottom: 32 }}
             keyboardShouldPersistTaps="handled"

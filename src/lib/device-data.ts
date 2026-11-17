@@ -5,6 +5,7 @@ import {
 } from "@/lib/thresholds";
 import { processReadingAlerts } from "@/lib/emergency-alerts";
 import { enqueueWrite } from "@/lib/offline-queue";
+import { patchLocalDevice, type LocalDevice } from "@/lib/local-device";
 import { onDisconnect, ref, update } from "firebase/database";
 import { Timestamp } from "firebase/firestore";
 
@@ -292,13 +293,31 @@ export async function ingestReading(uid: string, r: Reading, ack: AckFn) {
     threshold_status,
     sequence: r.seq ?? null,
     received_at_ms: now,
-    aqi: r.aqi,
-    pm25: r.pm25,
-    pm10: r.pm10,
     co: r.co,
   };
+  // ESP mengirim PM = 0 selama sensor PM belum stabil (awal tiap siklus) dan AQI kosong
+  // sebelum terhitung. Nilai seperti itu tidak boleh menimpa nilai valid terakhir.
+  if (r.aqi !== null) live.aqi = r.aqi;
+  if (r.pm25 > 0) live.pm25 = r.pm25;
+  if (r.pm10 > 0) live.pm10 = r.pm10;
   if (r.spo2 !== null) live.spo2 = r.spo2;
   if (r.bpm !== null) live.bpm = r.bpm;
+
+  // Salinan di HP: beranda tetap menampilkan data walau tanpa internet
+  const local: Partial<LocalDevice> = {
+    status: "online",
+    wearable_added: true,
+    threshold_status,
+    received_at_ms: now,
+    co: r.co,
+  };
+  if (r.aqi !== null) local.aqi = r.aqi;
+  if (r.pm25 > 0) local.pm25 = r.pm25;
+  if (r.pm10 > 0) local.pm10 = r.pm10;
+  if (r.spo2 !== null) local.spo2 = r.spo2;
+  if (r.bpm !== null) local.bpm = r.bpm;
+  patchLocalDevice(uid, local);
+
   void update(ref(rtdb, `device/${uid}`), live).catch((error: unknown) => {
     console.warn("[live] Gagal memperbarui data terkini (offline?):", error);
   });
@@ -307,14 +326,18 @@ export async function ingestReading(uid: string, r: Reading, ack: AckFn) {
 
 // Kalau HP terputus dari internet / app ditutup, Firebase otomatis set offline
 export async function startDeviceSession(uid: string) {
+  // Status di HP dulu: dua perintah di bawah menunggu tanpa batas bila tidak ada internet
+  patchLocalDevice(uid, { status: "online", wearable_added: true }, true);
   const deviceRef = ref(rtdb, `device/${uid}`);
   await onDisconnect(deviceRef).update({ status: "offline" });
   await update(deviceRef, { status: "online", wearable_added: true });
 }
 export async function endDeviceSession(uid: string) {
+  patchLocalDevice(uid, { status: "offline" }, true);
   await update(ref(rtdb, `device/${uid}`), { status: "offline" });
 }
 export async function removeDeviceRegistration(uid: string) {
+  patchLocalDevice(uid, { status: "offline", wearable_added: false }, true);
   await update(ref(rtdb, `device/${uid}`), {
     status: "offline",
     wearable_added: false,

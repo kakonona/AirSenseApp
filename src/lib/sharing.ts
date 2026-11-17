@@ -1,16 +1,14 @@
 import type { Contact } from "@/hooks/use-device";
 import { createGuestInvitation } from "@/lib/emergency-alerts";
 import { db, rtdb } from "@/lib/firebase";
+import { deleteWrite, setWrite, updateWrite, writeNow } from "@/lib/firestore-rest";
 import { ref as dbRef, remove, set } from "firebase/database";
-import {
-    deleteDoc,
-    doc,
-    getDoc,
-    setDoc,
-    updateDoc,
-} from "firebase/firestore";
+import { doc, getDoc } from "firebase/firestore";
 
 export type Me = { uid: string; name: string; email: string };
+
+// Tulisan Firestore di file ini lewat REST (writeNow), bukan setDoc/updateDoc SDK:
+// lihat penjelasan di firestore-rest.ts.
 
 // A menambahkan B sebagai kontak darurat → B akan memantau A (setelah B menerima)
 export async function addUserByEmail(me: Me, rawEmail: string) {
@@ -23,29 +21,33 @@ export async function addUserByEmail(me: Me, rawEmail: string) {
   if (!hit.exists()) throw new Error("Email belum terdaftar di aplikasi");
   const target = hit.data() as { uid: string; name: string };
 
-  const mine = doc(db, "profile", me.uid, "emergency_contacts", target.uid);
-  if ((await getDoc(mine)).exists())
+  const minePath = ["profile", me.uid, "emergency_contacts", target.uid];
+  if ((await getDoc(doc(db, minePath.join("/")))).exists())
     throw new Error("Pengguna ini sudah ada di daftar");
 
   try {
-    await setDoc(mine, {
-      contactId: target.uid,
-      name: target.name,
-      phone: "",
-      type: "registered",
-      fcm_token: "",
-      uid: target.uid,
-      status: "pending",
-    });
+    await writeNow(
+      setWrite(minePath, {
+        contactId: target.uid,
+        name: target.name,
+        phone: "",
+        type: "registered",
+        fcm_token: "",
+        uid: target.uid,
+        status: "pending",
+      }),
+    );
     await set(dbRef(rtdb, `access/${me.uid}/${target.uid}`), "pending");
-    await setDoc(doc(db, "profile", target.uid, "monitoring", me.uid), {
-      monitoringId: me.uid,
-      target_uid: me.uid,
-      target_name: me.name,
-      status: "pending",
-    });
+    await writeNow(
+      setWrite(["profile", target.uid, "monitoring", me.uid], {
+        monitoringId: me.uid,
+        target_uid: me.uid,
+        target_name: me.name,
+        status: "pending",
+      }),
+    );
   } catch (e) {
-    await deleteDoc(mine).catch(() => {});
+    await writeNow(deleteWrite(minePath)).catch(() => {});
     await remove(dbRef(rtdb, `access/${me.uid}/${target.uid}`)).catch(() => {});
     throw e;
   }
@@ -57,34 +59,26 @@ export async function respondToInvite(
   ownerUid: string,
   accept: boolean,
 ) {
-  const mon = doc(db, "profile", myUid, "monitoring", ownerUid);
-  const theirContact = doc(
-    db,
-    "profile",
-    ownerUid,
-    "emergency_contacts",
-    myUid,
-  );
+  const mon = ["profile", myUid, "monitoring", ownerUid];
+  const theirContact = ["profile", ownerUid, "emergency_contacts", myUid];
   const access = dbRef(rtdb, `access/${ownerUid}/${myUid}`);
   if (accept) {
-    await updateDoc(mon, { status: "accepted" });
-    await updateDoc(theirContact, { status: "accepted" });
+    await writeNow(updateWrite(mon, { status: "accepted" }));
+    await writeNow(updateWrite(theirContact, { status: "accepted" }));
     await set(access, true);
   } else {
-    await updateDoc(theirContact, { status: "rejected" });
+    await writeNow(updateWrite(theirContact, { status: "rejected" }));
     await remove(access);
-    await deleteDoc(mon);
+    await writeNow(deleteWrite(mon));
   }
 }
 
 // A mencabut akses seseorang (pengguna terdaftar maupun guest)
 export async function removeWatcher(myUid: string, c: Contact) {
-  await deleteDoc(doc(db, "profile", myUid, "emergency_contacts", c.contactId));
+  await writeNow(deleteWrite(["profile", myUid, "emergency_contacts", c.contactId]));
   if (c.type === "registered" && c.uid) {
     await remove(dbRef(rtdb, `access/${myUid}/${c.uid}`));
-    await deleteDoc(doc(db, "profile", c.uid, "monitoring", myUid)).catch(
-      () => {},
-    );
+    await writeNow(deleteWrite(["profile", c.uid, "monitoring", myUid])).catch(() => {});
   }
 }
 

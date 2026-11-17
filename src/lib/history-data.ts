@@ -164,7 +164,13 @@ function toRecord(id: string, x: Record<string, unknown>): HistoryRecord | null 
   return r.aqi === null && r.spo2 === null && r.bpm === null ? null : r;
 }
 
-// Firestore + data yang masih tersimpan di HP (belum tersinkron), digabung per id
+// Hasil baca Firestore disimpan sementara: data baru dari wearable selalu lewat antrean
+// lokal (pendingDocs), jadi Firestore tidak perlu dibaca ulang tiap layar di-refresh.
+// Tanpa ini kuota baca harian paket gratis (50 ribu dokumen) cepat habis.
+const SERVER_CACHE_MS = 10 * 60_000;
+const serverCache = new Map<string, { at: number; records: Map<string, HistoryRecord> }>();
+
+// Firestore + data lokal di HP (belum / baru tersinkron), digabung per id
 async function readRecords(uid: string, start?: number, end?: number) {
   const base = collection(db, "profile", uid, "history");
   const ranged = start !== undefined && end !== undefined;
@@ -177,17 +183,25 @@ async function readRecords(uid: string, start?: number, end?: number) {
       )
     : query(base, orderBy("timestamp"));
   const pending = await pendingDocs(["profile", uid, "history"]).catch(() => []);
-  const byId = new Map<string, HistoryRecord>();
-  try {
-    const snap = await getDocs(q);
-    for (const d of snap.docs) {
-      const r = toRecord(d.id, d.data());
-      if (r) byId.set(d.id, r);
+  const cacheKey = `${uid}|${start ?? ""}|${end ?? ""}`;
+  const cached = serverCache.get(cacheKey);
+  let byId = new Map<string, HistoryRecord>();
+  if (cached && Date.now() - cached.at < SERVER_CACHE_MS) {
+    byId = new Map(cached.records);
+  } else {
+    try {
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        const r = toRecord(d.id, d.data());
+        if (r) byId.set(d.id, r);
+      }
+      serverCache.set(cacheKey, { at: Date.now(), records: new Map(byId) });
+    } catch (error) {
+      // offline / kuota habis: pakai hasil baca terakhir + data lokal bila ada
+      if (cached) byId = new Map(cached.records);
+      else if (pending.length === 0) throw error;
+      console.warn("[history] Firestore tidak terjangkau, memakai data lokal:", error);
     }
-  } catch (error) {
-    // offline & tidak ada cache: tetap tampilkan data lokal bila ada
-    if (pending.length === 0) throw error;
-    console.warn("[history] Firestore tidak terjangkau, memakai data lokal:", error);
   }
   for (const p of pending) {
     const r = toRecord(p.id, p.data);

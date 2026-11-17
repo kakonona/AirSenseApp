@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index";
 
 const env: Env = {
-  FIREBASE_PROJECT_ID: "airsensecp1",
+  FIREBASE_PROJECT_ID: "airsense-cp2",
   GOOGLE_SERVICE_ACCOUNT: "",
 };
 

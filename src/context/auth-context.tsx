@@ -14,7 +14,8 @@ import {
 } from "firebase/auth";
 import { getNativeGoogleIdToken } from "@/lib/google-sign-in";
 import { ref as dbRef, set } from "firebase/database";
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import { setWrite, writeNow } from "@/lib/firestore-rest";
+import { doc, getDoc } from "firebase/firestore";
 import React from "react";
 import { Platform } from "react-native";
 
@@ -58,7 +59,12 @@ export function authErrorMessage(e: unknown): string {
     case "auth/too-many-requests":
       return "Terlalu banyak percobaan, coba lagi nanti";
     case "auth/network-request-failed":
+    case "unavailable":
       return "Tidak ada koneksi internet";
+    case "resource-exhausted":
+      return "Kuota harian Firebase (paket gratis) habis. Coba lagi setelah kuota pulih.";
+    case "permission-denied":
+      return "Akses ditolak Firestore, cek Rules";
     case "app/username-taken":
       return "Username sudah dipakai";
     case "app/invalid-username":
@@ -107,7 +113,7 @@ async function ensureDirectory(u: User) {
   const prof = await getDoc(doc(db, "profile", u.uid));
   const name =
     (prof.data()?.name as string) || u.displayName || u.email.split("@")[0];
-  await setDoc(ref, { uid: u.uid, name });
+  await writeNow(setWrite(["emails", u.email.toLowerCase()], { uid: u.uid, name }));
 }
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -146,18 +152,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         try {
           await updateProfile(cred.user, { displayName: name });
           // Sesuai struktur data: profile/{uid} = { name, email }
-          await setDoc(doc(db, "profile", cred.user.uid), {
-            name,
-            email: mail,
-          });
-          await setDoc(doc(db, "usernames", key), {
-            uid: cred.user.uid,
-            email: mail,
-          });
-          await setDoc(doc(db, "emails", mail.toLowerCase()), {
-            uid: cred.user.uid,
-            name,
-          });
+          // Lewat REST (bukan setDoc SDK): lihat firestore-rest.ts
+          await writeNow(setWrite(["profile", cred.user.uid], { name, email: mail }));
+          await writeNow(
+            setWrite(["usernames", key], { uid: cred.user.uid, email: mail }),
+          );
+          await writeNow(
+            setWrite(["emails", mail.toLowerCase()], { uid: cred.user.uid, name }),
+          );
         } catch (e) {
           await deleteUser(cred.user).catch(() => {});
           throw e;
@@ -183,10 +185,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         const ref = doc(db, "profile", u.uid);
         if (!(await getDoc(ref)).exists()) {
-          await setDoc(ref, {
-            name: u.displayName ?? "",
-            email: u.email ?? "",
-          });
+          await writeNow(
+            setWrite(["profile", u.uid], {
+              name: u.displayName ?? "",
+              email: u.email ?? "",
+            }),
+          );
         }
       },
 

@@ -7,15 +7,14 @@ import { Platform } from "react-native";
 
 // Salin dari Firebase Console → Project settings → Your apps → (Web app) → SDK setup
 const firebaseConfig = {
-  apiKey: "AIzaSyDJdsSOlalzyAjT8HAMJotxiCS65I0K7Kk",
-  authDomain: "airsensecp1.firebaseapp.com",
+  apiKey: "AIzaSyA5EEph-u8mPhm_cEavTfD2_YPrxJp5iiU",
+  authDomain: "airsense-cp2.firebaseapp.com",
   databaseURL:
-    "https://airsensecp1-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "airsensecp1",
-  storageBucket: "airsensecp1.firebasestorage.app",
-  messagingSenderId: "128083387722",
-  appId: "1:128083387722:web:b90a97a147cacb7d284db3",
-  measurementId: "G-40NXL7DX97",
+    "https://airsense-cp2-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "airsense-cp2",
+  storageBucket: "airsense-cp2.firebasestorage.app",
+  messagingSenderId: "1024187429583",
+  appId: "1:1024187429583:web:6e499fd57df509a046fdba",
 };
 
 export const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
