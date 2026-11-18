@@ -1,5 +1,5 @@
 import { acceptGuestInvitation } from "@/lib/emergency-alerts";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React from "react";
 import {
   ActivityIndicator,
@@ -21,7 +21,8 @@ export default function GuestInviteScreen() {
   const inviteId = Array.isArray(rawInviteId) ? rawInviteId[0] : rawInviteId;
   const [name, setName] = React.useState("");
   const [busy, setBusy] = React.useState(false);
-  const [accepted, setAccepted] = React.useState(false);
+  const router = useRouter();
+  const [accepted, setAccepted] = React.useState<string | null>(null); // nama pemilik
   const [error, setError] = React.useState<string | null>(null);
 
   const accept = async () => {
@@ -32,8 +33,7 @@ export default function GuestInviteScreen() {
     setBusy(true);
     setError(null);
     try {
-      await acceptGuestInvitation(inviteId, name.trim());
-      setAccepted(true);
+      setAccepted(await acceptGuestInvitation(inviteId, name.trim()));
     } catch (acceptError) {
       const message =
         acceptError instanceof Error
@@ -72,11 +72,28 @@ export default function GuestInviteScreen() {
           </Text>
           <Text style={{ color: "#5B665E", fontSize: 15, lineHeight: 23, marginTop: 12 }}>
             {accepted
-              ? "Undangan diterima. Perangkat ini akan menerima notifikasi darurat dan snapshot lokasi."
+              ? `Undangan diterima. Perangkat ini akan menerima notifikasi darurat dan snapshot lokasi dari ${accepted}.\n\nNotifikasi tetap masuk walaupun aplikasi ditutup. Status ini dan riwayat peringatan dapat dilihat kembali di halaman awal aplikasi.`
               : "Terima undangan untuk mendapatkan notifikasi darurat AirSense. Aplikasi harus terpasang dan izin notifikasi perlu diaktifkan."}
           </Text>
 
-          {!accepted && (
+          {accepted ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => router.replace("/welcome")}
+              style={{
+                minHeight: 52,
+                marginTop: 22,
+                borderRadius: 16,
+                backgroundColor: DARK,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text style={{ color: "#fff", fontWeight: "700", fontSize: 15 }}>
+                Selesai
+              </Text>
+            </Pressable>
+          ) : (
             <>
               <TextInput
                 value={name}

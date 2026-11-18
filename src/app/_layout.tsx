@@ -21,7 +21,14 @@ import {
   ThemeProvider,
   useRouter,
 } from "expo-router";
-import { ActivityIndicator, Alert, View, useColorScheme } from "react-native";
+import { collectPresentedGuestAlerts, recordGuestAlert } from "@/lib/guest-mode";
+import {
+  ActivityIndicator,
+  Alert,
+  AppState,
+  View,
+  useColorScheme,
+} from "react-native";
 import "../global.css";
 
 function RootNavigator() {
@@ -33,6 +40,7 @@ function RootNavigator() {
       const data = response.notification.request.content.data;
       if (!data || data.url !== "/emergency-alert") return;
       Notifications.clearLastNotificationResponse();
+      void recordGuestAlert(data);
       const params: Record<string, string> = {};
       for (const [key, value] of Object.entries(data)) {
         if (
@@ -51,6 +59,22 @@ function RootNavigator() {
       Notifications.addNotificationResponseReceivedListener(openAlert);
     return () => subscription.remove();
   }, [router]);
+
+  // Mode tamu: catat peringatan ke daftar di HP (yang masuk saat app terbuka, dan yang
+  // masih ada di panel notifikasi saat app dibuka). Tanpa Firestore.
+  React.useEffect(() => {
+    void collectPresentedGuestAlerts();
+    const received = Notifications.addNotificationReceivedListener((n) => {
+      void recordGuestAlert(n.request.content.data);
+    });
+    const appState = AppState.addEventListener("change", (next) => {
+      if (next === "active") void collectPresentedGuestAlerts();
+    });
+    return () => {
+      received.remove();
+      appState.remove();
+    };
+  }, []);
 
   // Sinkron data yang tersimpan di HP saat offline (tiap 1 jam / saat internet kembali)
   React.useEffect(() => {

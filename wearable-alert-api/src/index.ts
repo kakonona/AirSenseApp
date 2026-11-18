@@ -582,13 +582,18 @@ async function acceptGuestInvitation(request: Request, env: Env) {
   const invitation = await getDocument(env, `invitations/${inviteId}`);
   if (!invitation) throw new ApiError("Undangan tidak ditemukan.", 404);
   const data = unfields(invitation.fields);
+  // Nama pemilik untuk kartu "Mode tamu" di HP tamu (dokumen undangan sudah dibaca)
+  const inviterName =
+    typeof data.inviter_name === "string" && data.inviter_name
+      ? data.inviter_name
+      : "Pengguna AirSense";
   const tokenHash = await sha256(token);
   if (
     data.used === true &&
     data.guest_token_hash === tokenHash &&
     typeof data.guest_contact_id === "string"
   ) {
-    return { accepted: true, contactId: data.guest_contact_id };
+    return { accepted: true, contactId: data.guest_contact_id, inviterName };
   }
   if (data.used === true) throw new ApiError("Undangan sudah digunakan.", 409);
   if (
@@ -632,11 +637,41 @@ async function acceptGuestInvitation(request: Request, env: Env) {
       latestData.guest_token_hash === tokenHash &&
       typeof latestData.guest_contact_id === "string"
     ) {
-      return { accepted: true, contactId: latestData.guest_contact_id };
+      return { accepted: true, contactId: latestData.guest_contact_id, inviterName };
     }
     throw error;
   }
-  return { accepted: true, contactId };
+  return { accepted: true, contactId, inviterName };
+}
+
+// Tamu berhenti menjadi Kontak Darurat dari HP-nya sendiri. Tamu tidak punya akun, jadi
+// kepemilikan dibuktikan dengan token FCM HP yang dulu dipakai menerima undangan.
+// Biaya: 1 baca (undangan) + 1 hapus (kontak).
+async function leaveGuestInvitation(request: Request, env: Env) {
+  const body = await readBody(request);
+  const inviteId = requiredString(body.inviteId, "inviteId", 128);
+  if (!/^[A-Za-z0-9_-]+$/.test(inviteId)) {
+    throw new ApiError("ID undangan tidak valid.", 400);
+  }
+  const token = requiredToken(body.token);
+  const invitation = await getDocument(env, `invitations/${inviteId}`);
+  if (!invitation) return { left: true }; // sudah tidak ada
+  const data = unfields(invitation.fields);
+  if (data.guest_token_hash !== (await sha256(token))) {
+    throw new ApiError("Undangan ini tidak diterima dari perangkat ini.", 403);
+  }
+  const ownerUid = requiredString(data.inviter_uid, "inviter_uid", 128);
+  const contactId = data.guest_contact_id;
+  if (validDocumentId(ownerUid) && typeof contactId === "string" && validDocumentId(contactId)) {
+    const response = await fetch(
+      firestoreUrl(env, `profile/${ownerUid}/emergency_contacts/${contactId}`),
+      { method: "DELETE", headers: { authorization: `Bearer ${await googleAccessToken(env)}` } },
+    );
+    if (!response.ok && response.status !== 404) {
+      throw googleApiError(`Firestore delete failed (${response.status})`, response.status);
+    }
+  }
+  return { left: true };
 }
 
 function validateAlert(body: JsonMap) {
@@ -1158,6 +1193,8 @@ export default {
         result = await createInvitation(request, env);
       } else if (url.pathname === "/acceptGuestInvitation") {
         result = await acceptGuestInvitation(request, env);
+      } else if (url.pathname === "/leaveGuestInvitation") {
+        result = await leaveGuestInvitation(request, env);
       } else if (url.pathname === "/reportEmergencyAlert") {
         result = await reportEmergencyAlert(request, env);
       } else {

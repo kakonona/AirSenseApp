@@ -5,6 +5,7 @@ import { AppState, Platform } from "react-native";
 import { auth } from "@/lib/firebase";
 import { Timestamp } from "firebase/firestore";
 import { enqueueWrite } from "@/lib/offline-queue";
+import { addGuestOwner, removeGuestOwner } from "@/lib/guest-mode";
 import type { Reading } from "@/lib/device-data";
 import { parameterThreshold, type AlertParameter } from "@/lib/thresholds";
 import { EMERGENCY_CHANNEL_ID } from "@/lib/app-permissions";
@@ -849,12 +850,32 @@ export async function acceptGuestInvitation(
   inviteId: string,
   name: string,
 ) {
+  let result: unknown;
   try {
     const token = await getDevicePushTokenWithRetry();
-    await alertApiRequest("acceptGuestInvitation", { inviteId, name, token }, false);
+    result = await alertApiRequest("acceptGuestInvitation", { inviteId, name, token }, false);
   } catch (error) {
     throw logPushFailure(pushFailure("worker-network", error));
   }
+  const inviterName =
+    result && typeof result === "object" && "inviterName" in result &&
+    typeof result.inviterName === "string"
+      ? result.inviterName
+      : "Pengguna AirSense";
+  // Disimpan di HP untuk kartu "Mode tamu" di halaman awal
+  await addGuestOwner({ inviteId, ownerName: inviterName, acceptedAt: Date.now() });
+  return inviterName;
+}
+
+// Tamu berhenti menjadi Kontak Darurat: pemilik tidak lagi mengirim peringatan ke HP ini.
+export async function leaveGuestInvitation(inviteId: string) {
+  try {
+    const token = await getDevicePushTokenWithRetry();
+    await alertApiRequest("leaveGuestInvitation", { inviteId, token }, false);
+  } catch (error) {
+    throw logPushFailure(pushFailure("worker-network", error));
+  }
+  await removeGuestOwner(inviteId);
 }
 
 export { EMERGENCY_CHANNEL_ID };

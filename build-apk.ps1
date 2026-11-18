@@ -3,6 +3,8 @@
 #   Pakai:   powershell -ExecutionPolicy Bypass -File .\build-apk.ps1
 #   Opsi:    -Prebuild   paksa buat ulang folder android
 #            -Clean      hapus salinan build dan mulai dari nol (lama, seperti build pertama)
+#            -Emulator   sertakan juga kode x86_64 agar jalan mulus di emulator Android Studio
+#                        (APK lebih besar; tetap bisa dipasang di HP biasa)
 #
 # Hasil:     dist\AirSense.apk
 #
@@ -18,7 +20,8 @@
 # terpasang dan login Google akan gagal.
 param(
   [switch]$Prebuild,
-  [switch]$Clean
+  [switch]$Clean,
+  [switch]$Emulator
 )
 $ErrorActionPreference = "Stop"
 
@@ -65,7 +68,8 @@ if ($Prebuild -or -not (Test-Path "$build\android\gradlew.bat") -or $oldHash.Tri
 }
 
 # 4. Tanda tangan
-$gradleArgs = @("assembleRelease", "-PreactNativeArchitectures=arm64-v8a,armeabi-v7a", "--console=plain")
+$architectures = if ($Emulator) { "arm64-v8a,armeabi-v7a,x86_64" } else { "arm64-v8a,armeabi-v7a" }
+$gradleArgs = @("assembleRelease", "-PreactNativeArchitectures=$architectures", "--console=plain")
 $credentials = "$project\credentials.json"
 if (Test-Path $credentials) {
   $keystore = (Get-Content -Raw $credentials | ConvertFrom-Json).android.keystore
